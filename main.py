@@ -10,6 +10,8 @@ from math import e
 from scipy.stats import beta
 from scipy.spatial import distance
 import argparse
+import hashlib
+import json
 
 def conf2tag(conf, n=8):
     """
@@ -230,7 +232,7 @@ class Agent:
             conc_of_effectors = s[1:self.args.E+1]
 
         else:
-            conc_of_effectors = np.linspace(0,0,E)
+            conc_of_effectors = np.linspace(0,0,self.args.E)
             conc_of_effectors = [int(i) for i in conc_of_effectors]
         return(conc_of_effectors)
 
