@@ -9,29 +9,28 @@ from tqdm import trange
 from math import e
 from scipy.stats import beta
 from scipy.spatial import distance
+import argparse
 
-#Important variables
+def conf2tag(conf, n=8):
+    """
+    Creates unique tags for tracking experiments.
+    """
+    return hashlib.sha1(json.dumps(conf, sort_keys=True).encode("utf-8")).digest().hex()[:n]
 
-E = 5 #number of effector genes, IMPORTANT VARIABLE
-default_nodes = np.linspace(0,E,E+1)
-default_nodes = [int(i) for i in default_nodes] #maternal factor and E effector genes, can't be duplicated or removed
-effectors = np.delete(default_nodes, 0) #effector genes don't have outgoing edges, only incoming
-
-#arbitrary mutation rates
-#we could also make these rates evolve themselves
-dn_rate = 0.005
-dup_rate = 0.005
-del_rate = 0.01
-edge_rate = 0.8
-
-#Make perfect gene expression states for each environment
-nenvs = 2 #number of environments that fluctuate, IMPORTANT VARIABLE
-envs = [] #for keeping track of the environment
 def generate_optimum(nenvs, neffect):
+    """
+    Generates optimal expression patterns for different environments.
+    Parameters:
+        :int nenvs:         Number of different environments that can come up.
+        :int neffect:       Number of effector genes, ie genes that matter in fitness function.
+    Returns:
+        List of optimal expression patterns.
+    """
+    envs = []
     if nenvs == 2:
         x = np.linspace(0,1,100)
         a, b = 2, 7
-        y = beta.pdf(x, a, b)
+        y = beta.pdf(x, a, b) #using probability density function from scipy.stats
         y /= y.max()
         e=[]
         for i in range(neffect):
@@ -52,22 +51,47 @@ def generate_optimum(nenvs, neffect):
                 t = np.around(t,2)
                 e.append(t)                                
             envs.append(np.asarray(e))
+    print("created envs")
+    return(envs)
             
-#Agents have special attributes and the following functions:
-#4 different kinds of mutations, a sigmoid function for "binding affinity", a grn output function (!) and a fitness function
+    
+def fitness_function(grn_out,envs,state,args):
+    #distance of GRN output to perfect expression in specific environmental state
+    if np.sum(grn_out) != 0:
+        grn_out = np.asarray(grn_out)
+
+        diff = np.abs(grn_out - envs[state]).sum()
+        f = 1-diff/args.E
+    else:
+        #print('not stable')
+        f = 0
+
+    return(f)
+
+def create_pop(args):
+    pop = []
+
+    for i in range(args.pop_size):
+        t = Agent(i+2, args)
+        pop.append(t)
+
+    print("created pop")
+    return(pop) 
 
 class Agent:
-    def __init__(self, E):
+    def __init__(self,ID,args):
         """
         Initialization of an individual.
         Parameters:
-            :int N:         Number of nodes in the GRN.
+            :int ID:        Unique ID of the individual.
         Returns:
             None. Constructor method.
         """
         
+        self.args = args #so that we can run experiments with various parameters
+        
         #BUILDING INITIAL GRN
-        N = E+1
+        N = self.args.E +1
         self.N = N #number of initial nodes, maternal + effectors
         self.nodes = list(np.arange(N))
         self.adjM = np.zeros((N, N))
@@ -77,22 +101,31 @@ class Agent:
         #and maternal positive feedbackloop (otherwise it turns itself down immediately and so the rest is also repressed)
         
         #OTHER PARAMETERS
+        self.ID = ID
+        self.tree = [] #ID and tree for building phylogenic trees
         self.alpha = 10 #for sigmoid function - could be mutated later, now constant
         self.blacklist = [] #set of deleted genes
         self.fitness = 0
-    
-    def mutate(self, dn_rate = dn_rate, dup_rate = dup_rate, del_rate = del_rate, edge_rate = edge_rate):
         
-        if random.uniform(0, 1) < dn_rate:
+        self.dn_rate = self.args.dn_rate
+        self.dup_rate = self.args.dup_rate
+        self.del_rate = self.args.del_rate
+        self.edge_rate = self.args.edge_rate
+        #these rates can later be under selection too
+        
+    
+    def mutate(self):
+        
+        if random.uniform(0, 1) < self.dn_rate:
             self.add_dn_node()
             
-        if random.uniform(0, 1) < dup_rate:
+        if random.uniform(0, 1) < self.dup_rate:
             self.add_dup_node()
             
-        if random.uniform(0, 1) < del_rate:
+        if random.uniform(0, 1) < self.del_rate:
             self.del_node()
             
-        if random.uniform(0, 1) < edge_rate:
+        if random.uniform(0, 1) < self.edge_rate:
             self.mut_edge()
     
     def add_dn_node(self): 
@@ -112,7 +145,7 @@ class Agent:
         
     def add_dup_node(self):
         #duplicate a node with all of its connections
-        avail = list(set(self.nodes) - set(self.blacklist) - set(default_nodes))
+        avail = list(set(self.nodes) - set(self.blacklist) - set(self.args.default_nodes))
         
         if len(avail) > 0:
             dup_node = np.random.choice(avail)
@@ -133,7 +166,7 @@ class Agent:
         #delete an existing node with is not an effector or maternal gene
         #rows/columns in adj matrix are not deleted, all interactions are set to 0 instead
         #self.N incudes deleted nodes!
-        avail = list(set(self.nodes) - set(self.blacklist) - set(default_nodes))
+        avail = list(set(self.nodes) - set(self.blacklist) - set(self.args.default_nodes))
         
         if len(avail) > 0:
         
@@ -148,7 +181,7 @@ class Agent:
         #mutate the weight of an edge
         avail = list(set(self.nodes) - set(self.blacklist))
         
-        mod_avail_from = list(set(avail) - set(effectors)) #effectors can't regulate
+        mod_avail_from = list(set(avail) - set(self.args.effectors)) #effectors can't regulate
         from_nodes = np.random.choice(mod_avail_from)
         
         avail.remove(0) #maternal can't be regulated
@@ -169,12 +202,10 @@ class Agent:
         return output
     
     def grn_output(self, debug=False):
-    #explained further later    
         a = self.adjM
         if debug:
             print(a)
 
-        #thresh = np.vectorize(lambda x : -1 if x < 0 else (1 if x > 0 else 0)) #sign function for regulatory genes
         step = lambda a,s: self.sigm(s.dot(a)) #a step is matrix multiplication followed by checking on sigmodial function
         s = np.zeros(self.N)
         s[0] = 1 #starts with only maternal factor on
@@ -196,53 +227,42 @@ class Agent:
             i+=1
 
         if e > 1:
-            conc_of_effectors = s[1:E+1]
+            conc_of_effectors = s[1:self.args.E+1]
 
         else:
             conc_of_effectors = np.linspace(0,0,E)
             conc_of_effectors = [int(i) for i in conc_of_effectors]
         return(conc_of_effectors)
-    
-def fitness_function(grn_out, state):
-    #distance of GRN output to perfect expression in specific environmental state
-    if np.sum(grn_out) != 0:
-        grn_out = np.asarray(grn_out)
 
-        diff = np.abs(grn_out - envs[state]).sum()
-        f = 1-diff/E
-    else:
-        #print('not stable')
-        f = 0
 
-    return(f)
-
-def create_pop(pop_size,E):
-    pop = []
-    
-    for i in range(pop_size):
-        t = Agent(E)
-        pop.append(t)
-        
-    return(pop) 
-
-def evolve(pop_size, gens, season_length, E):
+def evolve(args):
     #gens = number of generations
     #season_length = number of generations before environment switches
-    pop = create_pop(pop_size, E)
+    pop = create_pop(args)
     state = 0 # we start with environment 0
+    envs = generate_optimum(args.nenv,args.E)
     
+    average_fitness = [] #for tracking average fitness in pop per generation
+    ave_grnsize = [] #average GRN size
     
-    for i in trange(gens):
+    for i in trange(args.gens):
         #every generation
-        #check fitness and generate new population
+        #check fitness and generate based on that new population
         
-        
-        for idx, ind in enumerate(pop): #mutate 
+        grn_size=[]
+
+        for idx, ind in enumerate(pop): #mutate and change ID
             ind.mutate()
-                                
+            if i > 0:
+                ind.ID = 2+(args.pop_size*i)+idx
+            ind.tree.append(ind.ID)
+            grn_size.append(ind.N-len(ind.blacklist))
+
+        ave_grnsize.append(np.average(grn_size))
+        
         for p in pop:
             grn_out = p.grn_output()
-            p.fitness = fitness_function(grn_out,state) #will depend on env
+            p.fitness = fitness_function(grn_out,envs,state,args) #will depend on env
                  
         pop_fitness = [x.fitness for x in pop]  
         tot_fitness = np.sum(pop_fitness)
@@ -250,10 +270,11 @@ def evolve(pop_size, gens, season_length, E):
         
 
         pop_prob = [f/tot_fitness for f in pop_fitness]
-        new_pop = np.random.choice(pop, pop_size, p=pop_prob, replace = True) #same individual can be selected over and over again
+        new_pop = np.random.choice(pop, args.pop_size, p=pop_prob, replace = True) #same individual can be selected over and over again
         pop = [deepcopy(agent) for agent in new_pop]
         
-        rd = (i+1) % season_length
+        
+        rd = (i+1) % args.season_length
         
         if rd == 0:
             #print("after this changed state")
@@ -262,14 +283,52 @@ def evolve(pop_size, gens, season_length, E):
             else:
                 state = 0
                 
-    
     best_agent = max([{"fitness" : x.fitness, "Agent" : x} for x in pop], key=lambda x : x["fitness"])["Agent"]
-    print(best_agent.adjM)
-    print(best_agent.fitness)
-    print(best_agent.grn_output())
-    
+
     return(pop)
 
-average_fitness = []
-population = evolve(pop_size = 1000, gens = 100, season_length = 1000, E=5)
 
+
+
+# %%
+if __name__ == "__main__":
+    # Here the stuff you want to execute with python main.py
+
+
+    parser = argparse.ArgumentParser(description='Process some integers.')
+
+    parser.add_argument('-E', type=int, default=4, help="Number of effector genes")
+
+    #number of environments that fluctuate, IMPORTANT VARIABLE
+    parser.add_argument('-nenv', type=int, default=2, help="Number of environments")
+
+    #arbitrary mutation rates
+    #we could also make these rates evolve themselves
+    parser.add_argument('-dn_rate', type=float, default=0.005, help="De novo Mutation rate")
+    parser.add_argument('-dup_rate', type=float, default=0.005, help="Dup Mutation rate")
+    parser.add_argument('-del_rate', type=float, default=0.01, help="Del Mutation rate")
+    parser.add_argument('-edge_rate', type=float, default=0.8, help="Edge Mutation rate")
+
+    parser.add_argument('-pop_size', type=int, default=10, help="Population size")
+    parser.add_argument('-gens', type=int, default=10, help="Number of generations")
+    parser.add_argument('-season_length', type=int, default=10, help="Number of generations in an env")
+    parser.add_argument('-exp_type', type=str, default="ANONYMUS", help="Name your experiment for grouping")
+    parser.add_argument('-rep', type=str, default="1", help="ID of replicate")
+
+    args = parser.parse_args()
+  
+    tag = conf2tag(vars(args))
+
+    ### Important variables to set
+
+    args.default_nodes = np.linspace(0,args.E,args.E+1)
+    args.default_nodes = [int(i) for i in args.default_nodes] #maternal factor and E effector genes, can't be duplicated or removed
+    args.effectors = np.delete(args.default_nodes, 0) #effector genes don't have outgoing edges, only incoming
+    args.name_of_file = args.exp_type + tag + "_" + args.rep
+    print(args.name_of_file)
+    
+
+
+    ### RUN CODE
+    print("running code")
+    population, average_fitness = evolve(args.pop_size, args.gens, args.season_length, args)
