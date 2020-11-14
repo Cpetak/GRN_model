@@ -12,6 +12,7 @@ from scipy.spatial import distance
 import argparse
 import hashlib
 import json
+import wandb
 
 def conf2tag(conf, n=8):
     """
@@ -68,7 +69,84 @@ def fitness_function(grn_out,envs,state,args):
         #print('not stable')
         f = 0
 
-    return(f)
+    return(f**3)
+
+def calc_strategy(pop, ssize, envs, args):
+    sample = np.random.choice(pop, ssize, replace=False)
+    low = 0
+    high = 0
+    spec = 0
+    gen = 0
+    if args.nenv == 2:
+        for p in sample:
+            grn_out = p.grn_output()
+            first_fitness = fitness_function(grn_out,envs,0,args)
+            second_fitness = fitness_function(grn_out,envs,1,args)
+            #print(1,first_fitness)
+            #print(2,second_fitness)
+            if (first_fitness < 0.3 and second_fitness < 0.3) or (0.3 <= first_fitness <= 0.7 and second_fitness < 0.3) or (first_fitness < 0.3 and 0.3 <=second_fitness <= 0.7):
+                low += 1
+            if (first_fitness > 0.7 and second_fitness > 0.7) or (0.3 <= first_fitness <= 0.7 and second_fitness > 0.7) or (first_fitness > 0.7 and 0.3 <=second_fitness <= 0.7):
+                high += 1
+            if (first_fitness < 0.3 and second_fitness > 0.7) or (first_fitness > 0.7 and second_fitness < 0.3):
+                spec += 1
+            if 0.3 <= first_fitness <= 0.7 and 0.3 <= second_fitness <= 0.7:
+                gen += 1
+                
+            #print("low",low)
+            #print("high", high)
+            #print("spec",spec)
+            #print("gen",gen)
+            
+    return(low, high,spec,gen)   
+            
+
+def calc_rob(pop, ssize, rounds, envs, state, args):
+    ave_exp_rob = []
+    ave_fit_rob = []
+    ave_ben_mut = []
+    ave_del_mut = []
+    sample = np.random.choice(pop, ssize, replace=False)
+    for p in sample:   
+        exp_rob = 0
+        fit_rob = 0
+        ben_mut = 0
+        del_mut = 0
+        ori_grn_out = p.grn_output()
+        ori_fitness = fitness_function(ori_grn_out,envs,state,args)
+        for mut in range(rounds):
+            sample_cp = deepcopy(p)
+            sample_cp.mut_edge()
+            new_grn_out = sample_cp.grn_output()
+            new_fitness = fitness_function(new_grn_out,envs,state,args)
+            if np.array_equal(ori_grn_out,new_grn_out):
+                exp_rob += 1
+                fit_rob += 1
+            else:
+                if new_fitness > ori_fitness:
+                    ben_mut +=1
+                elif new_fitness < ori_fitness:
+                    del_mut += 1
+                else:
+                    fit_rob += 1
+        if exp_rob > 0:
+            ave_exp_rob.append(exp_rob/rounds)
+        else:
+            ave_exp_rob.append(exp_rob)
+        if fit_rob > 0:
+            ave_fit_rob.append(fit_rob/rounds)
+        else:
+            ave_fit_rob.append(fit_rob)
+        if del_mut > 0:
+            ave_del_mut.append(del_mut/(rounds - fit_rob))
+        else:
+            ave_del_mut.append(del_mut)
+        if ben_mut > 0:
+            ave_ben_mut.append(ben_mut/(rounds - fit_rob))
+        else:
+            ave_ben_mut.append(ben_mut)
+    return(np.average(ave_exp_rob), np.average(ave_fit_rob), np.average(ave_ben_mut), np.average(ave_del_mut))
+    
 
 def create_pop(args):
     pop = []
@@ -246,6 +324,14 @@ def evolve(args):
 
     average_fitness = [] #for tracking average fitness in pop per generation
     ave_grnsize = [] #average GRN size
+    exp_rob= []
+    fit_rob= []
+    ben_mut= []
+    del_mut= []
+    low=[]
+    high=[]
+    spec=[]
+    gen=[]
 
     for i in trange(args.gens):
         #every generation
@@ -261,19 +347,38 @@ def evolve(args):
             grn_size.append(ind.N-len(ind.blacklist))
 
         ave_grnsize.append(np.average(grn_size))
+        wandb.log({'average_grnsize': np.average(grn_size)}, commit=False)
+        
+        ssize = 1#int(args.pop_size/10)
+        rounds = 50
+        ave_exp_rob, ave_fit_rob, ave_ben_mut, ave_del_mut=calc_rob(pop, ssize, rounds, envs, state, args)
+        exp_rob.append(ave_exp_rob)
+        fit_rob.append(ave_fit_rob)
+        ben_mut.append(ave_ben_mut)
+        del_mut.append(ave_del_mut)
+        
+        lowt, hight,spect,gent = calc_strategy(pop, ssize, envs, args)
+        low.append(lowt)
+        high.append(hight)
+        spec.append(spect)
+        gen.append(gent)
 
         for p in pop:
             grn_out = p.grn_output()
             p.fitness = fitness_function(grn_out,envs,state,args) #will depend on env
+            cost_of_nodes = (p.N-len(p.blacklist)-(args.E+1))*args.node_cost
+            if cost_of_nodes <= p.fitness:
+                p.fitness = p.fitness - cost_of_nodes
 
         pop_fitness = [x.fitness for x in pop]
         tot_fitness = np.sum(pop_fitness)
         average_fitness.append(np.mean(pop_fitness))
-
+        wandb.log({'average_fitness': np.mean(pop_fitness)}, commit=False)
 
         pop_prob = [f/tot_fitness for f in pop_fitness]
         new_pop = np.random.choice(pop, args.pop_size, p=pop_prob, replace = True) #same individual can be selected over and over again
         pop = [deepcopy(agent) for agent in new_pop]
+        
 
 
         rd = (i+1) % args.season_length
@@ -285,9 +390,9 @@ def evolve(args):
             else:
                 state = 0
 
-    best_agent = max([{"fitness" : x.fitness, "Agent" : x} for x in pop], key=lambda x : x["fitness"])["Agent"]
+    best_agent = max([{"fitness" : x.fitness, "Agent" : x.adjM} for x in pop], key=lambda x : x["fitness"])["Agent"]
 
-    return(pop, average_fitness)
+    return(pop, average_fitness, ave_grnsize, exp_rob, fit_rob, ben_mut, del_mut, best_agent, high,low,spec,gen)
 
 
 
@@ -310,16 +415,19 @@ if __name__ == "__main__":
     parser.add_argument('-dup_rate', type=float, default=0.005, help="Dup Mutation rate")
     parser.add_argument('-del_rate', type=float, default=0.01, help="Del Mutation rate")
     parser.add_argument('-edge_rate', type=float, default=0.8, help="Edge Mutation rate")
+    
+    parser.add_argument('-node_cost', type=float, default=0.01, help="Cost of having a node")
 
-    parser.add_argument('-pop_size', type=int, default=10, help="Population size")
-    parser.add_argument('-gens', type=int, default=10, help="Number of generations")
-    parser.add_argument('-season_length', type=int, default=10, help="Number of generations in an env")
+    parser.add_argument('-pop_size', type=int, default=100, help="Population size")
+    parser.add_argument('-gens', type=int, default=1000, help="Number of generations")
+    parser.add_argument('-season_length', type=int, default=10000, help="Number of generations in an env")
     parser.add_argument('-exp_type', type=str, default="ANONYMUS", help="Name your experiment for grouping")
     parser.add_argument('-rep', type=str, default="1", help="ID of replicate")
 
-    args = parser.parse_args()
+    args = parser.parse_args("")
 
     tag = conf2tag(vars(args))
+    wandb.init(project="test-project-11132020", group=args.exp_type+tag)
 
     ### Important variables to set
 
@@ -332,4 +440,4 @@ if __name__ == "__main__":
 
     ### RUN CODE
     print("running code")
-    population, average_fitness = evolve(args)
+    pop, average_fitness, ave_grnsize, exp_rob, fit_rob, ben_mut, del_mut, best_agent, high,low,spec,gen = evolve(args)
