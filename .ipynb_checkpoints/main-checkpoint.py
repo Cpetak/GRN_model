@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import wandb
+import operator
 
 def conf2tag(conf, n=8):
     """
@@ -55,6 +56,7 @@ def generate_optimum(nenvs, neffect):
                 e.append(t)
             envs.append(np.asarray(e))
     print("created envs")
+    print(envs)
     return(envs)
 
 
@@ -172,8 +174,7 @@ class Agent:
 
         #BUILDING INITIAL GRN
         N = self.args.E +1
-        self.N = N #number of initial nodes, maternal + effectors
-        self.nodes = list(np.arange(N))
+        self.N = N #number of nodes, initially maternal + effectors
         self.adjM = np.zeros((N, N))
         self.adjM[0,1:] = 0.1
         #initiate with maternal connected to effector genes
@@ -184,7 +185,6 @@ class Agent:
         self.ID = ID
         self.tree = [] #ID and tree for building phylogenic trees
         self.alpha = 10 #for sigmoid function - could be mutated later, now constant
-        self.blacklist = [] #set of deleted genes
         self.fitness = 0
 
         self.dn_rate = self.args.dn_rate
@@ -210,7 +210,6 @@ class Agent:
 
     def add_dn_node(self):
         #de novo gene, no interactions when initiated
-        self.nodes.append(self.N)
 
         #Make adj matrix bigger
         column_to_be_added = np.zeros(self.N)
@@ -225,7 +224,8 @@ class Agent:
 
     def add_dup_node(self):
         #duplicate a node with all of its connections
-        avail = list(set(self.nodes) - set(self.blacklist) - set(self.args.default_nodes))
+        all_nodes = list(np.arange(self.N))
+        avail = list(set(all_nodes) - set(self.args.default_nodes))
 
         if len(avail) > 0:
             dup_node = np.random.choice(avail)
@@ -236,7 +236,6 @@ class Agent:
             row_to_be_added = self.adjM[dup_node,:] #duplicate row
             self.adjM = np.vstack((self.adjM, row_to_be_added))
 
-            self.nodes.append(self.N)
             self.N += 1
 
             if self.N > 50:
@@ -246,20 +245,26 @@ class Agent:
         #delete an existing node with is not an effector or maternal gene
         #rows/columns in adj matrix are not deleted, all interactions are set to 0 instead
         #self.N incudes deleted nodes!
-        avail = list(set(self.nodes) - set(self.blacklist) - set(self.args.default_nodes))
+        all_nodes = list(np.arange(self.N))
+        avail = list(set(all_nodes) - set(self.args.default_nodes))
 
         if len(avail) > 0:
 
             deleted_node = np.random.choice(avail)
+            
+            self.adjM = np.delete(self.adjM, deleted_node, 1)
+            self.adjM = np.delete(self.adjM, deleted_node, 0)
+            
+            self.N -= 1
 
-            self.adjM[deleted_node,:] = np.zeros(self.N)
-            self.adjM[:,deleted_node] = np.zeros(self.N)
+            #self.adjM[deleted_node,:] = np.zeros(self.N)
+            #self.adjM[:,deleted_node] = np.zeros(self.N)
 
-            self.blacklist.append(deleted_node)
 
     def mut_edge(self):
         #mutate the weight of an edge
-        avail = list(set(self.nodes) - set(self.blacklist))
+        all_nodes = list(np.arange(self.N))
+        avail = list(set(all_nodes))
 
         mod_avail_from = list(set(avail) - set(self.args.effectors)) #effectors can't regulate
         from_nodes = np.random.choice(mod_avail_from)
@@ -293,7 +298,7 @@ class Agent:
         i=0 #counter for number of GRN updates
         ss=[] #stores GRN state for comparision to updated state
 
-        while e < 2 and i < 3*(self.N-len(self.blacklist)):
+        while e < 2 and i < 3*(self.N):
             if debug:
                 print(s) #print expression state
             ss.append(s) #only maternal ON at first
@@ -344,10 +349,10 @@ def evolve(args):
             if i > 0:
                 ind.ID = 2+(args.pop_size*i)+idx
             ind.tree.append(ind.ID)
-            grn_size.append(ind.N-len(ind.blacklist))
+            grn_size.append(ind.N)
 
         ave_grnsize.append(np.average(grn_size))
-        wandb.log({'average_grnsize': np.average(grn_size)}, commit=False)
+        #wandb.log({'average_grnsize': np.average(grn_size)}, commit=False)
         
         ssize = 1#int(args.pop_size/10)
         rounds = 50
@@ -366,18 +371,29 @@ def evolve(args):
         for p in pop:
             grn_out = p.grn_output()
             p.fitness = fitness_function(grn_out,envs,state,args) #will depend on env
-            cost_of_nodes = (p.N-len(p.blacklist)-(args.E+1))*args.node_cost
+            cost_of_nodes = (p.N-(args.E+1))*args.node_cost
             if cost_of_nodes <= p.fitness:
                 p.fitness = p.fitness - cost_of_nodes
 
         pop_fitness = [x.fitness for x in pop]
         tot_fitness = np.sum(pop_fitness)
         average_fitness.append(np.mean(pop_fitness))
-        wandb.log({'average_fitness': np.mean(pop_fitness)}, commit=False)
+        #wandb.log({'average_fitness': np.mean(pop_fitness)}, commit=False)
 
-        pop_prob = [f/tot_fitness for f in pop_fitness]
-        new_pop = np.random.choice(pop, args.pop_size, p=pop_prob, replace = True) #same individual can be selected over and over again
-        pop = [deepcopy(agent) for agent in new_pop]
+        
+        sorted_pop = sorted(pop, key=operator.attrgetter('fitness'), reverse=True)
+        elite = sorted_pop[:int(args.elite_size*args.pop_size)]
+        other = sorted_pop[int(args.elite_size*args.pop_size):]
+
+        pop_other_fitness = [x.fitness for x in other]
+        tot_other_fitness = np.sum(pop_other_fitness)
+        pop_prob = [f/tot_other_fitness for f in pop_other_fitness]
+        
+        
+        elite_pop = [deepcopy(agent) for agent in elite]
+        rest_pop =np.random.choice(other, args.pop_size-int(args.elite_size*args.pop_size), p=pop_prob, replace = True) #same individual can be selected over and over again
+        new_rest_pop = [deepcopy(agent) for agent in rest_pop]
+        pop = elite_pop + new_rest_pop
         
 
 
@@ -404,7 +420,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Process some integers.')
 
-    parser.add_argument('-E', type=int, default=4, help="Number of effector genes")
+    parser.add_argument('-E', type=int, default=5, help="Number of effector genes")
 
     #number of environments that fluctuate, IMPORTANT VARIABLE
     parser.add_argument('-nenv', type=int, default=2, help="Number of environments")
@@ -412,22 +428,24 @@ if __name__ == "__main__":
     #arbitrary mutation rates
     #we could also make these rates evolve themselves
     parser.add_argument('-dn_rate', type=float, default=0.005, help="De novo Mutation rate")
-    parser.add_argument('-dup_rate', type=float, default=0.005, help="Dup Mutation rate")
-    parser.add_argument('-del_rate', type=float, default=0.01, help="Del Mutation rate")
+    parser.add_argument('-dup_rate', type=float, default=0.1, help="Dup Mutation rate")
+    parser.add_argument('-del_rate', type=float, default=0.1, help="Del Mutation rate")
     parser.add_argument('-edge_rate', type=float, default=0.8, help="Edge Mutation rate")
     
     parser.add_argument('-node_cost', type=float, default=0.01, help="Cost of having a node")
+    parser.add_argument('-elite_size', type=float, default=0.3, help="Fraction of top fitness agents to select")
 
-    parser.add_argument('-pop_size', type=int, default=100, help="Population size")
-    parser.add_argument('-gens', type=int, default=1000, help="Number of generations")
+    parser.add_argument('-pop_size', type=int, default=10, help="Population size")
+    parser.add_argument('-gens', type=int, default=10, help="Number of generations")
     parser.add_argument('-season_length', type=int, default=10000, help="Number of generations in an env")
     parser.add_argument('-exp_type', type=str, default="ANONYMUS", help="Name your experiment for grouping")
     parser.add_argument('-rep', type=str, default="1", help="ID of replicate")
 
+    #args = parser.parse_args("") this when not in jupyter notebook
     args = parser.parse_args("")
 
     tag = conf2tag(vars(args))
-    wandb.init(project="test-project-11132020", group=args.exp_type+tag)
+    #wandb.init(project="test-project-11132020", group=args.exp_type+tag)
 
     ### Important variables to set
 
