@@ -1,0 +1,51 @@
+wandb_version: 1
+
+E:
+  desc: null
+  value: 4
+_wandb:
+  desc: null
+  value:
+    cli_version: 0.9.3
+    is_jupyter_run: true
+    is_kaggle_kernel: false
+    python_version: 3.7.2
+del_rate:
+  desc: null
+  value: 0.01
+dn_rate:
+  desc: null
+  value: 0.005
+dup_rate:
+  desc: null
+  value: 0.005
+edge_rate:
+  desc: null
+  value: 0.8
+elite_size:
+  desc: null
+  value: 0.3
+exp_type:
+  desc: null
+  value: ANONYMUS
+gens:
+  desc: null
+  value: 10
+nenv:
+  desc: null
+  value: 2
+node_cost:
+  desc: null
+  value: 0.01
+pop_size:
+  desc: null
+  value: 10
+proj:
+  desc: null
+  value: GRN_evolution
+rep:
+  desc: null
+  value: '1'
+season_length:
+  desc: null
+  value: 10000

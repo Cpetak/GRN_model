@@ -1,0 +1,26 @@
+{
+    "root": "/Users/csengepetak/Desktop/Experiments/GRN_model",
+    "program": "<python with no main file>",
+    "git": {
+        "remote": "https://github.com/Cpetak/GRN_model.git",
+        "commit": "59494b6cdb63fee05a7bbad4dbdbf56d7738c01f"
+    },
+    "email": "csenge.petak@uvm.edu",
+    "startedAt": "2020-11-30T12:55:34.658216",
+    "host": "Csenges-MacBook-Air.local",
+    "username": "csengepetak",
+    "executable": "/Users/csengepetak/miniconda3/bin/python",
+    "os": "Darwin-19.2.0-x86_64-i386-64bit",
+    "python": "3.7.2",
+    "cpu_count": 4,
+    "args": [
+        "-f",
+        "/Users/csengepetak/Library/Jupyter/runtime/kernel-f2ef097d-fcd6-44fd-ac6c-7814c56e671d.json"
+    ],
+    "state": "running",
+    "jobType": null,
+    "mode": "run",
+    "name": "efficient-dream-70",
+    "project": "GRN_evolution",
+    "heartbeatAt": "2020-11-30T12:55:37.579670"
+}
